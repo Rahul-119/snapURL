@@ -1,4 +1,5 @@
 import pool from '../db/index.js';
+import redisClient from '../redis/index.js';
 
 async function shortenURL(req, res) {
     try {
@@ -30,20 +31,50 @@ async function shortenURL(req, res) {
 
 async function redirectURL(req, res) {
     try {
-        let code = req.params.code;
+        const code = req.params.code;
 
-        const [rows] = await pool.query("SELECT long_url FROM urls WHERE short_code = ?", [code]);
+        const cachedUrl = await redisClient.get(code);
 
-        if(rows.length === 0) {
-            res.status(404).json({error: "URL not found"})
-            return;
+        if (cachedUrl) {
+            await pool.query(
+                "UPDATE urls SET clicks = clicks + 1 WHERE short_code = ?",
+                [code]
+            );
+
+            return res.redirect(cachedUrl);
         }
 
-        await pool.query("UPDATE urls SET clicks = clicks + 1 WHERE short_code = ?", [code])
+        const [rows] = await pool.query(
+            "SELECT long_url FROM urls WHERE short_code = ?",
+            [code]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({
+                error: "URL not found"
+            });
+        }
+
+        await redisClient.set(
+            code,
+            rows[0].long_url,
+            {
+                EX: 3600
+            }
+        );
+
+        await pool.query(
+            "UPDATE urls SET clicks = clicks + 1 WHERE short_code = ?",
+            [code]
+        );
+
         return res.redirect(rows[0].long_url);
+
     } catch (error) {
         console.log(error);
-        return res.status(500).json({error: "Database Error"})
+        return res.status(500).json({
+            error: "Database Error"
+        });
     }
 }
 
